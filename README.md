@@ -166,6 +166,17 @@ locations with:
 These scripts remove only the `sluice` executable. They do not remove your
 SQLite databases, `.foam-cache` directories, or `.foam-runs` directories.
 
+Update an installed copy to the latest published release on Linux or macOS:
+
+```bash
+sluice update
+```
+
+The updater verifies the release binary's SHA-256 checksum and atomically
+replaces the current executable. It needs write permission to that executable's
+directory; use the installer with appropriate privileges for a system-wide
+copy. Unreleased branches are not available through this command.
+
 If you do not want to install anything, use the source directly:
 
 ```bash

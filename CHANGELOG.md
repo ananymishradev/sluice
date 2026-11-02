@@ -14,6 +14,8 @@
   `log.build`.
 - Relative case, cache, run, and build-source paths resolve against the
   manifest directory.
+- `sluice update` installs the latest published release after SHA-256
+  verification.
 - Manifest `apiVersion` is `sluice/v1alpha1`; `sluice init` writes it.
 - Env vars use the `SLUICE_*` names (e.g. `SLUICE_API_TOKEN`). Values are
   never logged.

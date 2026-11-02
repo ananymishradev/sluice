@@ -130,6 +130,7 @@ func newRoot() *cobra.Command {
 		newDoctorCommand(),
 		newInitCommand(),
 		newVersionCommand(),
+		newUpdateCommand(),
 	)
 	return root
 }
