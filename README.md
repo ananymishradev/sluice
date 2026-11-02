@@ -166,6 +166,17 @@ locations with:
 These scripts remove only the `sluice` executable. They do not remove your
 SQLite databases, `.foam-cache` directories, or `.foam-runs` directories.
 
+Update an installed copy to the latest published release on Linux or macOS:
+
+```bash
+sluice update
+```
+
+The updater verifies the release binary's SHA-256 checksum and atomically
+replaces the current executable. It needs write permission to that executable's
+directory; use the installer with appropriate privileges for a system-wide
+copy. Unreleased branches are not available through this command.
+
 If you do not want to install anything, use the source directly:
 
 ```bash
@@ -328,6 +339,11 @@ mesh:
   strategy: auto        # auto, blockMesh, custom, none
   # commands: ["snappyHexMesh -overwrite"]
 
+build:
+  # Choose one: wmake a project root, or run custom build commands.
+  # source: ./solver
+  # commands: ["cd /shared/project && ./Allwmake"]
+
 post:
   reconstruct: false
   # commands: ["foamPostProcess -func sample"]
@@ -349,10 +365,18 @@ contain:
 
 ```text
 case/
-├── 0/            # or 0.orig (either satisfies preflight)
+├── 0/            # or 0.orig, or initial/ (any of the three satisfies preflight)
 ├── constant/
 └── system/
 ```
+
+For custom solvers, an optional `build` section runs only when the solver is
+not already available in the OpenFOAM environment. `build.source` must point
+to a `wmake` project containing `Make/files`; `build.commands` runs custom
+single-line commands instead. Choose exactly one. The source tree must be
+visible at the same path on compute nodes. The generated job logs build
+output to `log.build`, then verifies the solver is available before meshing.
+This bootstrap is unavailable with `solver.container`.
 
 Important fields:
 
@@ -372,6 +396,7 @@ Important fields:
 | `solver.arguments` | Additional solver arguments. |
 | `solver.fileHandler` | `collated`, `uncollated`, or `none`. |
 | `solver.checkpointSeconds` | USR1 lead time; `0` disables checkpoint/requeue. |
+| `build.source` / `build.commands` | Optional compute-node build step; use exactly one. |
 | `mesh.strategy` | `auto`, `blockMesh`, `custom`, or `none`. |
 | `post.reconstruct` | Run `reconstructPar` after a clean parallel solve. |
 | `runtime.foamBashrc` | OpenFOAM env; manifest > `$FOAM_BASHRC` > auto-detect. |
@@ -379,17 +404,19 @@ Important fields:
 | `storage.cacheDir` | Content-addressed cache root. |
 | `storage.runDir` | Per-job working directory root. |
 
-Validation also checks the case against the manifest generically: `controlDict`
-`application` must equal the manifest solver (or `foamRun` with any `solver
-<model>;` physics entry), `decomposeParDict` must match `nodes × tasksPerNode`
-for parallel runs, `checkpointSeconds` requires `runTimeModifiable true`, and
+Validation also checks the case against the manifest generically: a
+`controlDict` `application` mismatch is reported as a warning because the
+manifest solver is authoritative; `foamRun` still requires a `solver <model>;`
+physics entry. `decomposeParDict` must match `nodes × tasksPerNode` for
+parallel runs, `checkpointSeconds` requires `runTimeModifiable true`, and
 `mesh.strategy` must have a mesh source.
 
 ### Add extra files to the OpenFOAM case
 
-Sluice always stages the standard OpenFOAM inputs (`0/` or `0.orig/`,
-`constant/`, and `system/`). Other files at the top level of the case are
-ignored unless you list them in `case.include`.
+Sluice always stages the standard OpenFOAM inputs (`0/`, `0.orig/` or
+`initial/` — the laserbeamFoam convention, `constant/`, and `system/`).
+Other files at the top level of the case are ignored unless you list them
+in `case.include`.
 
 Use `case.include` for files or directories that your case needs, such as
 `Allrun`, `Allclean`, custom scripts, or additional configuration:
@@ -405,8 +432,9 @@ case:
 
 The entries are relative to `case.path`, but they must refer to an additional
 top-level name. For example, `scripts` includes the whole `scripts/` directory.
-The standard `0/`, `constant/`, and `system/` directories are already included
-and must not be listed again. Included files are copied into the cached case,
+The standard initial-fields directory (`0/`, `0.orig/`, or `initial/`),
+`constant/`, and `system/` are already included and must not be listed again.
+Included files are copied into the cached case,
 included in its content hash, and available in the isolated run directory on
 the compute node.
 
@@ -552,9 +580,9 @@ with a `USR1` `writeNow` checkpoint trap and `scontrol requeue` when
 `checkpointSeconds > 0` → optional `reconstructPar` and `post.commands`.
 The manifest's `decomposeParDict` subdomain count is validated against the
 requested ranks before submission, so a mismatch fails fast instead of wasting
-queue time. Only `0/` (or `0.orig/`), `constant/`, `system/`, plus explicit
-`case.include` tops are staged and hashed; docs, scripts, logs, and `.foam-*`
-state never affect the case hash.
+queue time. Only `0/` (or `0.orig/`, `initial/`), `constant/`, `system/`, plus
+explicit `case.include` tops are staged and hashed; docs, scripts, logs, and
+`.foam-*` state never affect the case hash.
 
 ## Find logs
 

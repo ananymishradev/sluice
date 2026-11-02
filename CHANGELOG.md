@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 - 2026-11-02
 
+- Preflight and staging accept an `initial/` directory next to `0/` and
+  `0.orig/` (laserbeamFoam's tutorial convention). Its dictionaries are
+  scanned like `0/` for blocked directives.
+- A controlDict `application` value that disagrees with the manifest solver
+  is now a surfaceable warning instead of a hard validation error. The
+  manifest solver stays authoritative; `foamRun` model validation remains
+  strict.
+- Optional `build.source` and `build.commands` stages compile a missing
+  custom solver on the compute node before meshing, with output in
+  `log.build`.
+- Relative case, cache, run, and build-source paths resolve against the
+  manifest directory.
+- `sluice update` installs the latest published release after SHA-256
+  verification.
 - Manifest `apiVersion` is `sluice/v1alpha1`; `sluice init` writes it.
 - Env vars use the `SLUICE_*` names (e.g. `SLUICE_API_TOKEN`). Values are
   never logged.

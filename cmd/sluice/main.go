@@ -26,7 +26,7 @@ import (
 )
 
 // Version is set at build time: go build -ldflags "-X main.Version=...".
-var Version = "dev"
+var Version = "2.0.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)

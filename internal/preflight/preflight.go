@@ -15,6 +15,10 @@ type Report struct {
 	Hash     string
 	Findings []Finding
 	Warnings []Finding
+	// Notes are informational observations (never fatal). They make the
+	// compile-if-necessary behavior visible at validate time — e.g. whether
+	// the job's guarded build stage will wmake or skip.
+	Notes []Finding
 }
 
 // Runner validates an OpenFOAM case directory before queue time is spent.
@@ -48,23 +52,24 @@ func (r Runner) Run(ctx context.Context, caseDir string) (Report, error) {
 		return Report{}, fmt.Errorf("case %q is not a directory", caseDir)
 	}
 	// constant/ and system/ are always required. The initial-fields dir is
-	// "0" or "0.orig" (tutorials commonly ship 0.orig and create 0 at run
-	// time); at least one must exist so serial and parallel runs alike have
-	// boundary conditions to start from.
+	// "0", "0.orig", or "initial" (tutorials commonly ship 0.orig and create
+	// 0 at run time; laserbeamFoam-based cases ship "initial" and stage it
+	// before the first solve). At least one must exist so serial and
+	// parallel runs alike have boundary conditions to start from.
 	for _, name := range []string{"system", "constant"} {
 		if st, err := os.Stat(filepath.Join(caseDir, name)); err != nil || !st.IsDir() {
 			return Report{}, fmt.Errorf("case missing directory %s", name)
 		}
 	}
 	hasZero := false
-	for _, name := range []string{"0", "0.orig"} {
+	for _, name := range []string{"0", "0.orig", "initial"} {
 		if st, err := os.Stat(filepath.Join(caseDir, name)); err == nil && st.IsDir() {
 			hasZero = true
 			break
 		}
 	}
 	if !hasZero {
-		return Report{}, fmt.Errorf("case missing directory 0 (or 0.orig)")
+		return Report{}, fmt.Errorf("case missing directory 0 (or 0.orig, initial)")
 	}
 	allowed := map[string]bool{}
 	for _, a := range r.AllowedDirectives {
@@ -185,15 +190,17 @@ func within(root, target string) bool {
 
 // isDictPath reports whether rel is an OpenFOAM input dictionary that must
 // be scanned for executable directives. Only files under 0/, 0.orig/,
-// constant/, system/ qualify. Everything else (README, scripts, manifests,
-// logs) is documentation or artefacts and must not trigger findings.
+// initial/, constant/, system/ qualify. Everything else (README, scripts,
+// manifests, logs) is documentation or artefacts and must not trigger
+// findings.
 func isDictPath(rel string) bool {
 	sep := string(os.PathSeparator)
 	return strings.HasPrefix(rel, "0"+sep) ||
 		strings.HasPrefix(rel, "0.orig"+sep) ||
+		strings.HasPrefix(rel, "initial"+sep) ||
 		strings.HasPrefix(rel, "constant"+sep) ||
 		strings.HasPrefix(rel, "system"+sep) ||
-		rel == "0" || rel == "0.orig" || rel == "constant" || rel == "system"
+		rel == "0" || rel == "0.orig" || rel == "initial" || rel == "constant" || rel == "system"
 }
 
 // Subdomains reads system/decomposeParDict and returns numberOfSubdomains.

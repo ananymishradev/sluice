@@ -73,9 +73,12 @@ func runValidate(ctx context.Context, cfg validateConfig, stdout, stderr io.Writ
 		name = filepath.Base(m.Case.Path)
 	}
 	fmt.Fprintf(stderr, "%s manifest     %s · %s\n", symbols.OK, name, m.APIVersion)
-	fmt.Fprintf(stderr, "%s layout       0/ or 0.orig/ · constant/ · system/\n", symbols.OK)
+	fmt.Fprintf(stderr, "%s layout       0/, 0.orig/, or initial/ · constant/ · system/\n", symbols.OK)
 	fmt.Fprintf(stderr, "%s symlinks     no escaping symlinks\n", symbols.OK)
 	fmt.Fprintf(stderr, "%s directives   no blocked code-loading directives\n", symbols.OK)
+	for _, note := range report.Notes {
+		fmt.Fprintf(stderr, "%s %s: %s\n", symbols.OK, note.Path, note.Message)
+	}
 	if len(report.Warnings) == 0 {
 		fmt.Fprintf(stderr, "%s checks       no warnings\n", symbols.OK)
 	} else {

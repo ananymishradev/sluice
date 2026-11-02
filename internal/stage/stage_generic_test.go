@@ -71,3 +71,30 @@ func TestStageAcceptsZeroOrig(t *testing.T) {
 		t.Fatalf("0.orig must be staged: %v", err)
 	}
 }
+
+func TestStageAcceptsInitialDir(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(t.TempDir(), "cache")
+	for _, dir := range []string{"system", "constant", "initial"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "system", "controlDict"), []byte("application laserbeamFoam;\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "initial", "alpha.metal"), []byte("internalField uniform 0;\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Stage(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(res.Path, "initial", "alpha.metal")); err != nil {
+		t.Fatalf("initial/ must be staged (laserbeamFoam convention): %v", err)
+	}
+}
