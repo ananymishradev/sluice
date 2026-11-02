@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -25,6 +26,66 @@ type Service struct {
 	Preflight preflight.Runner
 	Metrics   *telemetry.Metrics
 	Observer  Observer
+	// ProbeSolver reports whether the manifest solver binary is on PATH
+	// inside the OpenFOAM environment (runtime.foamBashrc). Nil selects the
+	// real probe; tests inject fakes to stay machine-independent.
+	ProbeSolver func(ctx context.Context, bashrc, name string) (bool, error)
+}
+
+// execProbeSolver is the production probe: it sources the bashrc and asks
+// for the binary exactly the way the job will. The bashrc's exit status is
+// deliberately ignored (ESI bashrcs can return nonzero after a successful
+// source); the presence of the binary is the only signal.
+//
+// The bashrc and solver name travel via environment variables instead of
+// positional arguments: OpenFOAM's etc/config.sh/setup treats unnamed
+// positional arguments as VAR=value settings or as files to source, so a
+// positional bashrc path makes the bashrc source itself recursively.
+func execProbeSolver(ctx context.Context, bashrc, name string) (bool, error) {
+	if _, err := os.Stat(bashrc); err != nil {
+		return false, err
+	}
+	cmd := exec.CommandContext(ctx, "bash", "-c",
+		`set +e; source "$FOAM_PROBE_BASHRC" >/dev/null 2>&1; command -v "$FOAM_PROBE_SOLVER"`)
+	cmd.Env = append(os.Environ(),
+		"FOAM_PROBE_BASHRC="+bashrc,
+		"FOAM_PROBE_SOLVER="+name)
+	if err := cmd.Run(); err != nil {
+		return false, nil // environment sourced; binary simply absent
+	}
+	return true, nil
+}
+
+// noteBuildStage turns the compile-if-necessary decision into report notes:
+// informational, never fatal. On the compute node the generated script
+// re-checks with the real environment — this note is advisory.
+func (s *Service) noteBuildStage(ctx context.Context, m manifest.Manifest, report *preflight.Report) {
+	probe := s.ProbeSolver
+	if probe == nil {
+		probe = execProbeSolver
+	}
+	found, envErr := probe(ctx, m.Runtime.FoamBashrc, m.Solver.Name)
+	note := func(path, format string, args ...any) {
+		report.Notes = append(report.Notes, preflight.Finding{
+			Severity: "note",
+			Path:     path,
+			Message:  fmt.Sprintf(format, args...),
+		})
+	}
+	switch {
+	case envErr != nil:
+		note("runtime.foamBashrc", "cannot probe solver %q locally (%v); the build decision happens on the compute node", m.Solver.Name, envErr)
+	case m.Build != nil && found:
+		note("build", "build stage will be skipped: %q is already on PATH inside %s", m.Solver.Name, m.Runtime.FoamBashrc)
+	case m.Build != nil:
+		what := "wmake " + m.Build.Source
+		if len(m.Build.Commands) > 0 {
+			what = fmt.Sprintf("run %d build.commands", len(m.Build.Commands))
+		}
+		note("build", "build stage will %s before running: %q is not on PATH locally", what, m.Solver.Name)
+	case !found:
+		note("solver", "%q is not on PATH locally and the manifest has no build: section — job may fail at solver launch", m.Solver.Name)
+	}
 }
 
 type Result struct {
@@ -53,7 +114,11 @@ func (s *Service) Plan(ctx context.Context, manifestPath string) (Plan, error) {
 	s.observe("manifest", StageDone, m.Name)
 	cacheDir := m.Storage.CacheDir
 	if cacheDir == "" {
-		cacheDir = filepath.Join(filepath.Dir(manifestPath), ".foam-cache")
+		// Manifest loading already resolves defaults to absolute paths;
+		// this keeps a plan built straight from a manifest struct robust
+		// to a relative manifest path and a different cwd.
+		baseDir, _ := filepath.Abs(filepath.Dir(manifestPath))
+		cacheDir = filepath.Join(baseDir, ".foam-cache")
 	}
 	stager, err := stage.New(cacheDir)
 	if err != nil {
@@ -86,7 +151,6 @@ func (s *Service) Validate(ctx context.Context, manifestPath string) (manifest.M
 	}
 	for _, check := range []func(manifest.Manifest) error{
 		checkDecomposition,
-		checkControlDict,
 		checkCheckpoint,
 		checkMeshSource,
 	} {
@@ -97,6 +161,24 @@ func (s *Service) Validate(ctx context.Context, manifestPath string) (manifest.M
 			return m, report, err
 		}
 	}
+	warning, err := checkControlDict(m)
+	if err != nil {
+		if s.Metrics != nil {
+			s.Metrics.PreflightFailures.Add(1)
+		}
+		return m, report, err
+	}
+	// Fold a solver/application drift into the report as a warning so
+	// `sluice validate` surfaces it, without failing the run.
+	if warning != "" {
+		report.Warnings = append(report.Warnings, preflight.Finding{
+			Severity: "warning",
+			Path:     "system/controlDict",
+			Message:  warning,
+		})
+	}
+	// Make the compile-if-necessary decision visible at validate time.
+	s.noteBuildStage(ctx, m, &report)
 	return m, report, nil
 }
 
@@ -143,13 +225,18 @@ func stripDictComments(s string) string {
 //     The model name is never hard-coded: incompressibleFluid (heavySimple),
 //     fluid (heavyBuoyant), or any future model all pass.
 //   - native solver (simpleFoam, buoyantPimpleFoam, customMySolver, ...):
-//     the manifest solver must equal controlDict's application entry.
+//     the manifest solver should equal controlDict's application entry; a
+//     drift (like laserbeamFoam's Allrun running "laserbeamFoam" while its
+//     controlDict declares "Flint_multiphaseEulerFoamD") is reported as a
+//     warning, not an error, because the manifest solver is authoritative
+//     for submission and controlDict's application is advisory metadata.
 //
-// This catches copy-paste manifests without an allow-list.
-func checkControlDict(m manifest.Manifest) error {
+// This catches copy-paste manifests without an allow-list. It returns an
+// optional drift warning together with a fatal error.
+func checkControlDict(m manifest.Manifest) (warning string, err error) {
 	raw, err := os.ReadFile(filepath.Join(m.Case.Path, "system", "controlDict"))
 	if err != nil {
-		return fmt.Errorf("read system/controlDict: %w", err)
+		return "", fmt.Errorf("read system/controlDict: %w", err)
 	}
 	text := stripDictComments(string(raw))
 	app := ""
@@ -157,21 +244,22 @@ func checkControlDict(m manifest.Manifest) error {
 		app = mm[1]
 	}
 	if app == "" {
-		return fmt.Errorf("system/controlDict does not declare application <solver>;")
+		return "", fmt.Errorf("system/controlDict does not declare application <solver>;")
 	}
 	if app == "foamRun" {
 		if m.Solver.Name != "foamRun" {
-			return fmt.Errorf("system/controlDict declares application foamRun but manifest solver is %q", m.Solver.Name)
+			return "", fmt.Errorf("system/controlDict declares application foamRun but manifest solver is %q", m.Solver.Name)
 		}
 		if mm := solverRe.FindStringSubmatch(text); mm == nil {
-			return fmt.Errorf("system/controlDict declares application foamRun but no solver <model>; entry")
+			return "", fmt.Errorf("system/controlDict declares application foamRun but no solver <model>; entry")
 		}
-		return nil
+		return "", nil
 	}
 	if m.Solver.Name != app {
-		return fmt.Errorf("system/controlDict declares application %q but manifest solver is %q", app, m.Solver.Name)
+		return fmt.Sprintf("application drift: controlDict declares %q but manifest solver %q is authoritative",
+			app, m.Solver.Name), nil
 	}
-	return nil
+	return "", nil
 }
 
 // checkCheckpoint requires runTimeModifiable when the USR1 writeNow trap is
@@ -255,7 +343,8 @@ func (s *Service) Submit(ctx context.Context, manifestPath string) (Result, erro
 	}
 	runDir := m.Storage.RunDir
 	if runDir == "" {
-		runDir = filepath.Join(filepath.Dir(manifestPath), ".foam-runs")
+		baseDir, _ := filepath.Abs(filepath.Dir(manifestPath))
+		runDir = filepath.Join(baseDir, ".foam-runs")
 	}
 	runPath := filepath.Join(runDir, id)
 	if err := stager.Materialize(staged.Path, runPath); err != nil {
@@ -327,9 +416,15 @@ func checkpointScript(m manifest.Manifest, caseDir string) (string, error) {
 			return "", fmt.Errorf("unsafe solver argument")
 		}
 	}
-	for _, c := range append(append([]string{}, m.Mesh.Commands...), m.Post.Commands...) {
+	var scriptedCmds []string
+	scriptedCmds = append(scriptedCmds, m.Mesh.Commands...)
+	scriptedCmds = append(scriptedCmds, m.Post.Commands...)
+	if m.Build != nil {
+		scriptedCmds = append(scriptedCmds, m.Build.Commands...)
+	}
+	for _, c := range scriptedCmds {
 		if strings.ContainsAny(c, "\r\n") {
-			return "", fmt.Errorf("unsafe mesh/post command")
+			return "", fmt.Errorf("unsafe mesh/post/build command")
 		}
 	}
 	for _, a := range m.Runtime.MPI.ExtraArgs {
@@ -429,6 +524,35 @@ func checkpointScript(m manifest.Manifest, caseDir string) (string, error) {
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "cd %s\n", shellQuote(caseDir))
 	sb.WriteString("pwd; ls\n")
+
+	// --- build (compile-if-necessary bootstrap) ---
+	// A naked project may not have its solver binary installed yet. With a
+	// build: section, the job first checks the real compute-node environment
+	// and wmake-compiles the project only when the binary is missing.
+	// Everything — build included — happens inside the Slurm allocation.
+	if m.Build != nil {
+		sb.WriteString("\n# --- build (compile if necessary, manifest build.source) ---\n")
+		if container {
+			sb.WriteString("echo \"ERROR: build.source is not supported with solver.container (sources are not visible in the image)\" >&2\n")
+			sb.WriteString("exit 1\n")
+		} else {
+			fmt.Fprintf(&sb, "if ! command -v %s >/dev/null 2>&1; then\n", m.Solver.Name)
+			if len(m.Build.Commands) > 0 {
+				fmt.Fprintf(&sb, "  echo \"--- build: %s not on PATH; running build.commands ---\"\n", m.Solver.Name)
+				for _, c := range m.Build.Commands {
+					fmt.Fprintf(&sb, "  echo \"--- build cmd: %s ---\" >> log.build\n", c)
+					fmt.Fprintf(&sb, "  foam_serial %s >> log.build 2>&1 || { echo \"ERROR: build command failed: %s (see log.build)\"; exit 1; }\n", shellSingle(c), c)
+				}
+			} else {
+				fmt.Fprintf(&sb, "  echo \"--- build: %s not on PATH; wmake %s ---\"\n", m.Solver.Name, shellSingle(m.Build.Source))
+				fmt.Fprintf(&sb, "  ( cd %s && wmake ) 2>&1 | tee log.build\n", shellSingle(m.Build.Source))
+			}
+			fmt.Fprintf(&sb, "  command -v %s >/dev/null 2>&1 || { echo \"ERROR: %s still not on PATH after build stage (see log.build)\"; exit 1; }\n", m.Solver.Name, m.Solver.Name)
+			sb.WriteString("else\n")
+			fmt.Fprintf(&sb, "  echo \"--- build skipped (%s already on PATH) ---\"\n", m.Solver.Name)
+			sb.WriteString("fi\n")
+		}
+	}
 
 	// --- mesh ---
 	sb.WriteString("\n# --- mesh (strategy from manifest) ---\n")

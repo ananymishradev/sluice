@@ -66,13 +66,15 @@ func (s *Stager) Stage(caseDir string, include ...string) (Result, error) {
 }
 
 // caseTopDirs are the canonical OpenFOAM inputs that define a case.
-// "0" and "0.orig" are both accepted as the initial-fields directory:
-// many tutorials ship 0.orig and create 0 at run time. Everything else at
-// the case root (README, manifests, *.sh, *.slurm, logs, .foam-cache,
-// .foam-runs, processor*, .git) is documentation, artefacts, or runner
-// state and must not affect the content hash or the cached copy unless
-// explicitly listed in case.include.
-var caseTopDirs = map[string]bool{"0": true, "0.orig": true, "constant": true, "system": true}
+// "0", "0.orig", and "initial" are all accepted as the initial-fields
+// directory: many tutorials ship 0.orig and create 0 at run time, and
+// laserbeamFoam-based cases ship "initial" that their Allrun stages to 0
+// before the first solve. Everything else at the case root (README,
+// manifests, *.sh, *.slurm, logs, .foam-cache, .foam-runs, processor*,
+// .git) is documentation, artefacts, or runner state and must not affect
+// the content hash or the cached copy unless explicitly listed in
+// case.include.
+var caseTopDirs = map[string]bool{"0": true, "0.orig": true, "initial": true, "constant": true, "system": true}
 
 func topOf(rel string) string {
 	if i := strings.Index(rel, string(os.PathSeparator)); i >= 0 {
@@ -197,8 +199,8 @@ func hashTree(root string, extra map[string]bool) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// copyCaseTree copies the canonical inputs (0/, 0.orig/, constant/,
-// system/) plus any explicit case.include tops from src to dst.
+// copyCaseTree copies the canonical inputs (0/, 0.orig/, initial/,
+// constant/, system/) plus any explicit case.include tops from src to dst.
 func copyCaseTree(src, dst string, extra map[string]bool) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
