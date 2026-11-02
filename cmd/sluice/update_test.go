@@ -125,13 +125,18 @@ func TestUpdateReleaseDoesNotDowngrade(t *testing.T) {
 	}
 }
 
-func TestFindReleaseAssetsSupportsLegacyNames(t *testing.T) {
-	binary, checksum := findReleaseAssets([]releaseAsset{
-		{Name: "clutch-linux-amd64", BrowserDownloadURL: "https://example.test/sluice"},
-		{Name: "clutch-linux-amd64.sha256", BrowserDownloadURL: "https://example.test/sluice.sha256"},
-	}, "sluice-linux-amd64", "clutch-linux-amd64")
-	if binary.Name != "clutch-linux-amd64" || checksum.Name != "clutch-linux-amd64.sha256" {
-		t.Fatalf("legacy release assets = %q and %q", binary.Name, checksum.Name)
+func TestFindReleaseAssetsRequiresBinaryAndChecksum(t *testing.T) {
+	assets := []releaseAsset{
+		{Name: "sluice-linux-amd64", BrowserDownloadURL: "https://example.test/sluice"},
+		{Name: "sluice-linux-amd64.sha256", BrowserDownloadURL: "https://example.test/sluice.sha256"},
+	}
+	binary, checksum := findReleaseAssets(assets, "sluice-linux-amd64")
+	if binary.Name != "sluice-linux-amd64" || checksum.Name != "sluice-linux-amd64.sha256" {
+		t.Fatalf("release assets = %q and %q", binary.Name, checksum.Name)
+	}
+	binary, checksum = findReleaseAssets(assets[:1], "sluice-linux-amd64")
+	if binary.Name != "" || checksum.Name != "" {
+		t.Fatalf("assets without a checksum must be rejected, got %q and %q", binary.Name, checksum.Name)
 	}
 }
 

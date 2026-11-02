@@ -106,8 +106,7 @@ func updateRelease(ctx context.Context, client *http.Client, apiURL, executable,
 	}
 
 	binaryName := fmt.Sprintf("%s-%s-%s", brand.Name, runtime.GOOS, runtime.GOARCH)
-	legacyBinaryName := fmt.Sprintf("clutch-%s-%s", runtime.GOOS, runtime.GOARCH)
-	binary, checksum := findReleaseAssets(release.Assets, binaryName, legacyBinaryName)
+	binary, checksum := findReleaseAssets(release.Assets, binaryName)
 	if binary.Name == "" || checksum.Name == "" {
 		return fmt.Errorf("release %s does not provide a binary and SHA-256 checksum for %s/%s", release.TagName, runtime.GOOS, runtime.GOARCH)
 	}
@@ -131,22 +130,20 @@ func updateRelease(ctx context.Context, client *http.Client, apiURL, executable,
 	return nil
 }
 
-func findReleaseAssets(assets []releaseAsset, binaryName, legacyName string) (releaseAsset, releaseAsset) {
+func findReleaseAssets(assets []releaseAsset, binaryName string) (releaseAsset, releaseAsset) {
 	byName := make(map[string]releaseAsset, len(assets))
 	for _, asset := range assets {
 		byName[asset.Name] = asset
 	}
-	for _, name := range []string{binaryName, legacyName} {
-		binary, ok := byName[name]
-		if !ok {
-			continue
-		}
-		checksum, ok := byName[name+".sha256"]
-		if ok {
-			return binary, checksum
-		}
+	binary, ok := byName[binaryName]
+	if !ok {
+		return releaseAsset{}, releaseAsset{}
 	}
-	return releaseAsset{}, releaseAsset{}
+	checksum, ok := byName[binaryName+".sha256"]
+	if !ok {
+		return releaseAsset{}, releaseAsset{}
+	}
+	return binary, checksum
 }
 
 func downloadChecksum(ctx context.Context, client *http.Client, assetURL string) (string, error) {
